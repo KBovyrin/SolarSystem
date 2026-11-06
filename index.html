@@ -1,0 +1,117 @@
+<!DOCTYPE html>
+<html lang="ru">
+<head>
+  <meta charset="utf-8">
+  <meta name="viewport" content="width=device-width, initial-scale=1">
+  <title>Земля и Солнце — смена дня и ночи, времена года</title>
+  <style>
+    html, body { margin: 0; padding: 0; height: 100%; overflow: hidden; background: #000; }
+    #scene { position: absolute; inset: 0; }
+    #panel {
+      position: absolute; top: 12px; left: 12px; z-index: 10;
+      background: rgba(20, 24, 40, 0.82); color: #fff;
+      border-radius: 12px; padding: 14px 18px;
+      font-family: system-ui, sans-serif; font-size: 15px;
+      box-shadow: 0 4px 18px rgba(0,0,0,0.4);
+      user-select: none; max-width: 340px;
+    }
+    #panel .date { font-size: 20px; font-weight: 600; letter-spacing: 0.5px; }
+    #panel .season { margin-left: 8px; color: #ffd54f; }
+    #panel .distance { margin-top: 3px; color: #b8c7e8; font-size: 14px; font-variant-numeric: tabular-nums; }
+    #panel .controls { margin-top: 10px; display: flex; align-items: center; gap: 10px; flex-wrap: wrap; }
+    button {
+      background: #2c3a5c; color: #fff; border: none; border-radius: 8px;
+      padding: 7px 12px; font-size: 14px; cursor: pointer;
+    }
+    button:hover { background: #3d5185; }
+    input[type=range] { width: 130px; }
+    select {
+      background: #2c3a5c; color: #fff; border: none; border-radius: 8px;
+      padding: 7px 8px; font-size: 14px; cursor: pointer;
+    }
+    #speedLabel { min-width: 70px; color: #b8c7e8; font-variant-numeric: tabular-nums; }
+    .hint { margin-top: 8px; color: #8d9cc4; font-size: 12.5px; }
+    #fatal-error {
+      display: none; margin-top: 10px; color: #ff8a80; font-size: 13.5px;
+      white-space: pre-line; max-width: 300px;
+    }
+  </style>
+</head>
+<body>
+<div id="scene"></div>
+<div id="panel">
+  <div><span class="date" id="date"></span><span class="season" id="season"></span></div>
+  <div class="distance" id="distance"></div>
+  <div class="controls">
+    <button id="pause">⏸ Пауза</button>
+    <input id="speed" type="range" min="0" max="1000" value="500">
+    <span id="speedLabel"></span>
+    <select id="planet" title="Тело для наблюдения"></select>
+  </div>
+  <div class="controls">
+    <button id="cam-overview">Общий вид</button>
+    <button id="cam-side">Сбоку</button>
+    <button id="cam-top">Сверху</button>
+  </div>
+  <div class="hint">Вращайте мышью, колесо — приближение. Выберите планету — камера последует за ней. Розовые кольца — равноденствия и солнцестояния Земли: планета входит в кольцо в эту дату. Бирюзовые точки — перигелий и афелий; крестик — центр эллипса орбиты (Солнце — в фокусе, не в центре).</div>
+  <div id="fatal-error"></div>
+</div>
+<script src="vendor/three.min.js"></script>
+<script src="vendor/OrbitControls.js"></script>
+<script src="js/timeModel.js"></script>
+<script src="js/orbital.js"></script>
+<script src="js/kepler.js"></script>
+<script src="js/bodies.js"></script>
+<script src="js/scales.js"></script>
+<script src="js/scene.js"></script>
+<script src="js/ui.js"></script>
+<script>
+(function () {
+  function fatal(message) {
+    var el = document.getElementById('fatal-error');
+    el.style.display = 'block';
+    el.textContent = message;
+  }
+
+  var scene;
+  try {
+    scene = SolarScene.create(document.getElementById('scene'));
+  } catch (e) {
+    fatal('Не удалось запустить трёхмерную сцену: ' + (e && e.message ? e.message : e) +
+      '\n\nОбычно причина — выключенный WebGL. Что попробовать:\n' +
+      '1) Настройки Firefox → Основные → Производительность → включить аппаратное ускорение и перезапустить браузер;\n' +
+      '2) открыть файл в Chrome/Chromium;\n' +
+      '3) если не помогло — сообщите текст этой ошибки разработчику.');
+    return;
+  }
+
+  var timeModel = new TimeModel({ speed: 86400 }); // старт: 1 сутки в секунду
+  var app = AppUI.createApp({
+    timeModel: timeModel,
+    scene: scene,
+    elements: {
+      date: document.getElementById('date'),
+      season: document.getElementById('season'),
+      distance: document.getElementById('distance'),
+      pause: document.getElementById('pause'),
+      speed: document.getElementById('speed'),
+      speedLabel: document.getElementById('speedLabel'),
+      planet: document.getElementById('planet'),
+      camOverview: document.getElementById('cam-overview'),
+      camSide: document.getElementById('cam-side'),
+      camTop: document.getElementById('cam-top')
+    }
+  });
+
+  var lastReal = performance.now();
+  function loop(now) {
+    var dt = (now - lastReal) / 1000;
+    lastReal = now;
+    app.tick(Math.min(dt, 0.1)); // защита от скачков после сворачивания окна
+    requestAnimationFrame(loop);
+  }
+  requestAnimationFrame(loop);
+})();
+</script>
+</body>
+</html>

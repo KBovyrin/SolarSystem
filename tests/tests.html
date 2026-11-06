@@ -1,0 +1,167 @@
+<!DOCTYPE html>
+<html lang="ru">
+<head>
+  <meta charset="utf-8">
+  <title>tests</title>
+  <style>
+    body { font-family: monospace; margin: 2rem; white-space: pre-wrap; }
+    .fail { color: #c00; font-weight: bold; }
+    .pass { color: #080; }
+    #app { display: none; }
+  </style>
+</head>
+<body>
+<h1>Тесты SolarSystem</h1>
+<div id="app">
+  <span id="date"></span>
+  <span id="season"></span>
+  <span id="distance"></span>
+  <button id="pause"></button>
+  <input id="speed" type="range" min="0" max="1000" value="0">
+  <span id="speedLabel"></span>
+  <select id="planet"></select>
+  <button id="cam-overview"></button>
+  <button id="cam-side"></button>
+  <button id="cam-top"></button>
+</div>
+<pre id="results">запуск…</pre>
+<script src="../js/timeModel.js"></script>
+<script src="../js/orbital.js"></script>
+<script src="../js/kepler.js"></script>
+<script src="../js/bodies.js"></script>
+<script src="../js/scales.js"></script>
+<script src="../js/ui.js"></script>
+<script src="suite.js"></script>
+<script>
+(function () {
+  var pre = document.getElementById('results');
+  var lines = [];
+  function emit(l) { lines.push(l); }
+  function check(name, ok, detail) {
+    emit((ok ? 'PASS ' : 'FAIL ') + name + (ok ? '' : ' :: ' + (detail || '')));
+    return ok;
+  }
+
+  var summary = TestSuite.runSuite({
+    TimeModel: window.TimeModel,
+    Orbital: window.Orbital,
+    Kepler: window.Kepler,
+    Bodies: window.Bodies,
+    Scales: window.Scales,
+    AppUI: window.AppUI
+  }, emit);
+
+  // DOM-smoke: связка UI ↔ timeModel ↔ сцена (сцена фейковая, записывает вызовы)
+  (function smoke() {
+    if (!window.AppUI || !window.TimeModel) {
+      check('DOM-smoke: модули загружены', false, 'нет AppUI/TimeModel');
+      return;
+    }
+    var id = function (x) { return document.getElementById(x); };
+    var sceneCalls = { updates: [], presets: [], targets: [] };
+    var fakeScene = {
+      update: function (date) { sceneCalls.updates.push(date.getTime()); },
+      render: function () {},
+      setCameraPreset: function (name) { sceneCalls.presets.push(name); },
+      setTarget: function (id) { sceneCalls.targets.push(id); },
+      resize: function () {}
+    };
+    var tm = new TimeModel({ startDate: new Date(2026, 2, 20, 12, 0, 0), speed: 86400 });
+    var app = AppUI.createApp({
+      timeModel: tm,
+      scene: fakeScene,
+      elements: {
+        date: id('date'), season: id('season'), distance: id('distance'),
+        pause: id('pause'), speed: id('speed'), speedLabel: id('speedLabel'),
+        planet: id('planet'),
+        camOverview: id('cam-overview'), camSide: id('cam-side'), camTop: id('cam-top')
+      }
+    });
+
+    app.tick(1);
+    check('smoke: после тика дата в DOM обновилась', id('date').textContent === '21.03.2026, 12:00',
+      'в DOM: «' + id('date').textContent + '»');
+    check('smoke: сезон показан', id('season').textContent === 'весна',
+      'в DOM: «' + id('season').textContent + '»');
+    check('smoke: индикатор расстояния и скорости заполнен',
+      /а\.е\./.test(id('distance').textContent) &&
+      /млн км/.test(id('distance').textContent) &&
+      /км\/с/.test(id('distance').textContent),
+      'в DOM: «' + id('distance').textContent + '»');
+    check('smoke: сцена получила update с датой', sceneCalls.updates.length === 1 &&
+      sceneCalls.updates[0] === new Date(2026, 2, 20, 12, 0, 0).getTime() + 86400000,
+      'вызовы: ' + JSON.stringify(sceneCalls.updates));
+
+    var before = id('date').textContent;
+    id('pause').click();
+    app.tick(5);
+    check('smoke: пауза останавливает время', id('date').textContent === before,
+      'было «' + before + '», стало «' + id('date').textContent + '»');
+
+    id('pause').click();
+    app.tick(2);
+    check('smoke: повторный клик возобновляет', id('date').textContent !== before,
+      'дата не изменилась');
+
+    id('speed').value = 1000;
+    id('speed').dispatchEvent(new Event('input'));
+    check('smoke: слайдер меняет скорость и подпись (максимум — 1 год/с)', tm.getSpeed() > 30000000 &&
+      /год\/с/.test(id('speedLabel').textContent),
+      'speed=' + tm.getSpeed() + ', label=«' + id('speedLabel').textContent + '»');
+
+    var distBefore = id('distance').textContent;
+    app.tick(0.2); // ~73 суток сим-времени на максимуме слайдера: март → июнь
+    check('smoke: расстояние/скорость меняются по мере движения по орбите',
+      id('distance').textContent !== distBefore && /а\.е\./.test(id('distance').textContent),
+      'было «' + distBefore + '», стало «' + id('distance').textContent + '»');
+
+    id('cam-top').click();
+    check('smoke: пресет камеры передаётся сцене', sceneCalls.presets.indexOf('top') !== -1,
+      'пресеты: ' + JSON.stringify(sceneCalls.presets));
+
+    // селектор тел: Солнце + 8 планет + Плутон, дефолт — Земля
+    check('smoke: селектор наполнен (Солнце + 8 планет + Плутон), по умолчанию Земля',
+      id('planet').options.length === 10 && id('planet').value === 'earth',
+      'опций: ' + id('planet').options.length + ', value=«' + id('planet').value + '»');
+    var plutoOption = null;
+    for (var oi = 0; oi < id('planet').options.length; oi++) {
+      if (id('planet').options[oi].value === 'pluto') plutoOption = id('planet').options[oi];
+    }
+    check('smoke: опция Плутона подписана «Плутон (карликовая)»',
+      plutoOption && plutoOption.textContent === 'Плутон (карликовая)',
+      'подпись: «' + (plutoOption ? plutoOption.textContent : 'нет опции') + '»');
+
+    id('planet').value = 'mars';
+    id('planet').dispatchEvent(new Event('input'));
+    check('smoke: смена планеты уводит фокус сцены на Марс', sceneCalls.targets.indexOf('mars') !== -1,
+      'цели: ' + JSON.stringify(sceneCalls.targets));
+    check('smoke: панель показывает данные Марса',
+      /Марс/.test(id('distance').textContent) && /а\.е\./.test(id('distance').textContent) &&
+      /км\/с/.test(id('distance').textContent) && /период/.test(id('distance').textContent),
+      'в DOM: «' + id('distance').textContent + '»');
+    check('smoke: сезон скрыт для не-Земли', id('season').textContent === '',
+      'в DOM: «' + id('season').textContent + '»');
+
+    id('planet').value = 'pluto';
+    id('planet').dispatchEvent(new Event('input'));
+    check('smoke: выбор Плутона уводит камеру и наполняет панель',
+      sceneCalls.targets.indexOf('pluto') !== -1 &&
+      /Плутон/.test(id('distance').textContent) && /период/.test(id('distance').textContent),
+      'цели: ' + JSON.stringify(sceneCalls.targets) + ', панель: «' + id('distance').textContent + '»');
+    check('smoke: сезон скрыт и для Плутона', id('season').textContent === '',
+      'в DOM: «' + id('season').textContent + '»');
+
+    id('planet').value = 'earth';
+    id('planet').dispatchEvent(new Event('input'));
+    check('smoke: возврат к Земле возвращает сезон', id('season').textContent === 'весна',
+      'в DOM: «' + id('season').textContent + '»');
+  })();
+
+  var anyFail = /^FAIL/m.test(lines.join('\n'));
+  pre.textContent = lines.join('\n');
+  pre.className = anyFail ? 'fail' : 'pass';
+  document.title = anyFail ? 'TESTS-FAIL' : 'TESTS-PASS';
+})();
+</script>
+</body>
+</html>

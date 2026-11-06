@@ -1,0 +1,520 @@
+<!DOCTYPE html>
+<html lang="ru">
+<head>
+  <meta charset="utf-8">
+  <title>visual-tests</title>
+  <style>body { font-family: monospace; margin: 1rem; white-space: pre-wrap; }</style>
+</head>
+<body>
+<div id="scene" style="width:800px;height:600px;"></div>
+<pre id="results">запуск…</pre>
+<script src="../vendor/three.min.js"></script>
+<script src="../vendor/OrbitControls.js"></script>
+<script src="../js/orbital.js"></script>
+<script src="../js/kepler.js"></script>
+<script src="../js/bodies.js"></script>
+<script src="../js/scales.js"></script>
+<script src="../js/scene.js"></script>
+<script>
+(function () {
+  var lines = [];
+  function log(l) { lines.push(l); }
+  function check(name, ok, detail) {
+    lines.push((ok ? 'PASS ' : 'FAIL ') + name + (ok ? '' : ' :: ' + (detail || '')));
+    return ok;
+  }
+  document.title = 'VISUAL-PENDING';
+
+  function run() {
+    var container = document.getElementById('scene');
+    var app = SolarScene.create(container);
+    var canvas = container.querySelector('canvas');
+
+    function pixels() {
+      app.render();
+      var shot = document.createElement('canvas');
+      shot.width = canvas.width; shot.height = canvas.height;
+      shot.getContext('2d').drawImage(canvas, 0, 0);
+      return shot.getContext('2d').getImageData(0, 0, shot.width, shot.height);
+    }
+    function analyze(img) {
+      var d = img.data, w = img.width, h = img.height;
+      var stats = { sun: 0, earth: 0,
+                    sunCx: 0, sunCy: 0, earthCx: 0, earthCy: 0, nonBlack: 0 };
+      for (var y = 0; y < h; y += 2) {
+        for (var x = 0; x < w; x += 2) {
+          var i = (y * w + x) * 4;
+          var r = d[i], g = d[i + 1], b = d[i + 2];
+          var lum = 0.2126 * r + 0.7152 * g + 0.0722 * b;
+          if (lum > 20) stats.nonBlack++;
+          if (r > 200 && g > 150 && b < 170) { stats.sun++; stats.sunCx += x; stats.sunCy += y; }
+          // Земля: освещённый океан — «голубизна» b−max(r,g); золотая линия орбиты (b<g) отсекается
+          if (r < 90 && b > 120 && b - Math.max(r, g) > 30) {
+            stats.earth++;
+            stats.earthCx += x; stats.earthCy += y;
+          }
+        }
+      }
+      if (stats.sun) { stats.sunCx /= stats.sun; stats.sunCy /= stats.sun; }
+      if (stats.earth) { stats.earthCx /= stats.earth; stats.earthCy /= stats.earth; }
+      return stats;
+    }
+
+    var JUNE = new Date(Date.UTC(2026, 5, 21, 12, 0, 0));
+    var MARCH = new Date(Date.UTC(2026, 2, 20, 12, 0, 0));
+    var DEC = new Date(Date.UTC(2026, 11, 21, 12, 0, 0));
+
+    // 1. базовый кадр: июнь, общий вид
+    app.update(JUNE);
+    var img1 = pixels();
+    var s1 = analyze(img1);
+    log('DBG июнь: earth=' + s1.earth + ' центр(' + s1.earthCx.toFixed(0) + ',' + s1.earthCy.toFixed(0) + ') sun=' + s1.sun + ' (' + s1.sunCx.toFixed(0) + ',' + s1.sunCy.toFixed(0) + ')');
+    check('сцена рендерится (не чёрный экран)', s1.nonBlack > 500,
+      'небелых пикселей ' + s1.nonBlack);
+    check('Солнце видно, в центре кадра', s1.sun > 40 &&
+      Math.abs(s1.sunCx - img1.width / 2) < 90 && Math.abs(s1.sunCy - img1.height / 2) < 90,
+      'пикселей ' + s1.sun + ', центр (' + s1.sunCx.toFixed(0) + ',' + s1.sunCy.toFixed(0) + ')');
+    check('Земля видна (освещённый океан)', s1.earth > 25, 'пикселей ' + s1.earth);
+
+    // 3. движение по орбите: июнь → март, Земля уходит на другую сторону кадра.
+    //    (декабрьская Земля с этой камеры повернута ночной стороной — тёмный силуэт,
+    //    поэтому для движения берём март: половина диска освещена)
+    app.update(MARCH);
+    var imgMarch = pixels();
+    var s2 = analyze(imgMarch);
+    var moved = Math.sqrt(Math.pow(s2.earthCx - s1.earthCx, 2) + Math.pow(s2.earthCy - s1.earthCy, 2));
+    log('DBG март: earth=' + s2.earth + ' центр(' + s2.earthCx.toFixed(0) + ',' + s2.earthCy.toFixed(0) + ')');
+    check('движение по орбите: за квартал Земля смещается на другой край кадра',
+      moved > 150 && s2.earth > 12,
+      'смещение ' + moved.toFixed(0) + ' px, пикселей ' + s2.earth);
+
+    // 2. терминатор день/ночь: в марте камера смотрит вдоль терминатора —
+    //    в диске Земли ровно яркая и тёмная половины
+    (function () {
+      var p = Orbital.earthPositionAU(MARCH);
+      var v = new THREE.Vector3(p.x * SolarScene.SCENE_SCALE, 0, p.z * SolarScene.SCENE_SCALE).project(app.camera);
+      var cx = Math.round((v.x * 0.5 + 0.5) * imgMarch.width), cy = Math.round((-v.y * 0.5 + 0.5) * imgMarch.height);
+      var d = imgMarch.data, w = imgMarch.width, bright = 0, dark = 0;
+      for (var y = cy - 13; y <= cy + 13; y++) {
+        for (var x = cx - 13; x <= cx + 13; x++) {
+          if (Math.sqrt((x - cx) * (x - cx) + (y - cy) * (y - cy)) > 13) continue;
+          var i = (y * w + x) * 4;
+          var lum = 0.2126 * d[i] + 0.7152 * d[i + 1] + 0.0722 * d[i + 2];
+          if (lum > 60) bright++;
+          if (lum < 25) dark++;
+        }
+      }
+      log('DBG день/ночь (март): ярких ' + bright + ', тёмных ' + dark);
+      check('видна и освещённая, и тёмная сторона Земли (терминатор)',
+        bright > 60 && dark > 60,
+        'ярких ' + bright + ', тёмных ' + dark);
+    })();
+
+    // средняя яркость приполюсной области: точка чуть смещена от полюса вдоль оси
+    // (центр диска при виде сверху — это ~72° с.ш., полюс проецируется ниже центра)
+    // средняя яркость приполюсной области на КРУПНОМ ПЛАНЕ Земли:
+    // камера ставится радиально над текущей позицией Земли, полюс — в проекции оси.
+    // Полярный день: шапка освещена; полярная ночь: центр чёрный.
+    function polarCapLum(date) {
+      app.update(date);
+      var p = Orbital.earthPositionAU(date);
+      var ex = p.x * SolarScene.SCENE_SCALE, ez = p.z * SolarScene.SCENE_SCALE;
+      var r = Math.sqrt(ex * ex + ez * ez);
+      app.camera.position.set(ex / r * (r + 8), 0.5, ez / r * (r + 8));
+      var ax = Orbital.earthAxisDirection();
+      var off = 1.4 * 0.1;
+      var v = new THREE.Vector3(ex + ax.x * off, ax.y * off, ez + ax.z * off).project(app.camera);
+      var img = pixels();
+      var cx = Math.round((v.x * 0.5 + 0.5) * img.width), cy = Math.round((-v.y * 0.5 + 0.5) * img.height);
+      var d = img.data, w = img.width, sum = 0, n = 0;
+      for (var y = cy - 8; y <= cy + 8; y++) {
+        for (var x = cx - 8; x <= cx + 8; x++) {
+          if (Math.sqrt((x - cx) * (x - cx) + (y - cy) * (y - cy)) > 8) continue;
+          var i = (y * w + x) * 4;
+          // оранжевый стержень оси проходит через полюс — не считать его «освещением»
+          if (d[i] > 150 && d[i + 1] > 60 && d[i + 1] < 210 && d[i + 2] < 100) continue;
+          sum += 0.2126 * d[i] + 0.7152 * d[i + 1] + 0.0722 * d[i + 2];
+          n++;
+        }
+      }
+      return { avg: n ? sum / n : 0, cx: cx, cy: cy };
+    }
+
+    // 3.5 метки сезонов: 4 розовых кольца на орбите в позициях равноденствий/солнцестояний
+    (function () {
+      var markers = Orbital.seasonMarkers(2026);
+      var allOk = true, detail = [];
+      for (var m = 0; m < markers.length; m++) {
+        var p = Orbital.earthPositionAU(markers[m].date);
+        var v = new THREE.Vector3(p.x * SolarScene.SCENE_SCALE, 0, p.z * SolarScene.SCENE_SCALE).project(app.camera);
+        var cx = Math.round((v.x * 0.5 + 0.5) * img1.width), cy = Math.round((-v.y * 0.5 + 0.5) * img1.height);
+        var d = img1.data, w = img1.width, pink = 0;
+        for (var y = Math.max(0, cy - 36); y <= Math.min(img1.height - 1, cy + 36); y++) {
+          for (var x = Math.max(0, cx - 36); x <= Math.min(w - 1, cx + 36); x++) {
+            if (Math.sqrt((x - cx) * (x - cx) + (y - cy) * (y - cy)) > 36) continue;
+            var i = (y * w + x) * 4;
+            if (d[i] > 170 && d[i + 1] < 110 && d[i + 2] > 40 && d[i + 2] < 170) pink++;
+          }
+        }
+        detail.push(markers[m].season + ':' + pink);
+        if (pink < 8) allOk = false;
+      }
+      log('DBG метки: ' + detail.join(' '));
+      check('4 метки сезонов на орбите (равноденствия и солнцестояния)', allOk, detail.join(' '));
+    })();
+
+    // 4. ось Земли: с бокового пресета видна в полный рост (с общего вида в июне она почти вдоль взгляда)
+    app.update(JUNE);
+    app.setCameraPreset('side');
+    (function () {
+      var img = pixels();
+      var p = Orbital.earthPositionAU(JUNE);
+      var v = new THREE.Vector3(p.x * SolarScene.SCENE_SCALE, 0, p.z * SolarScene.SCENE_SCALE).project(app.camera);
+      var cx = Math.round((v.x * 0.5 + 0.5) * img.width), cy = Math.round((-v.y * 0.5 + 0.5) * img.height);
+      var d = img.data, w = img.width, orange = 0;
+      for (var y = Math.max(0, cy - 40); y < Math.min(img.height, cy + 40); y++) {
+        for (var x = Math.max(0, cx - 40); x < Math.min(w, cx + 40); x++) {
+          var i = (y * w + x) * 4;
+          if (d[i] > 180 && d[i + 1] > 80 && d[i + 1] < 210 && d[i + 2] < 100) orange++;
+        }
+      }
+      log('DBG ось: оранжевых пикселей ' + orange + ' вокруг (' + cx + ',' + cy + ')');
+      check('ось Земли видна (оранжевая линия через полюса)', orange > 25, 'пикселей ' + orange);
+    })();
+
+    // 5. вид сверху — полярный день против полярной ночи:
+    //    в июне северное полушарие освещено, в декабре — тёмное
+    app.update(JUNE);
+    app.setCameraPreset('top');
+    var imgTop = pixels();
+    var sJuneTop = analyze(imgTop);
+    var capJune = polarCapLum(JUNE);
+    var capDec = polarCapLum(DEC);
+    log('DBG полюс: июнь=' + capJune.avg.toFixed(0) + ' (' + capJune.cx + ',' + capJune.cy + '), декабрь=' + capDec.avg.toFixed(0) + ' (' + capDec.cx + ',' + capDec.cy + ')');
+    check('пресет «сверху» работает (Солнце в центре, Земля видна)',
+      sJuneTop.earth > 15 && Math.abs(sJuneTop.sunCx - imgTop.width / 2) < 90 && Math.abs(sJuneTop.sunCy - imgTop.height / 2) < 90,
+      'июнь ' + sJuneTop.earth + ', солнце (' + sJuneTop.sunCx.toFixed(0) + ',' + sJuneTop.sunCy.toFixed(0) + ')');
+    check('сезонность: полярный день (июнь) и полярная ночь (декабрь) на полюсе',
+      capJune.avg > 25 && capDec.avg < 10,
+      'яркость полюса в июне ' + capJune.avg.toFixed(0) + ', в декабре ' + capDec.avg.toFixed(0));
+
+    // 6. апсиды и центр эллипса: бирюзовые точки перигелия/афелия на орбите
+    //    и крестик геометрического центра эллипса (Солнце — в фокусе, не в центре);
+    //    вид сверху, где вся орбита в кадре
+    (function () {
+      app.update(JUNE);
+      app.setCameraPreset('top');
+      var imgT = pixels(); // render() внутри pixels() освежает матрицы камеры
+      var d = imgT.data, w = imgT.width, h = imgT.height;
+      var aps = Orbital.apsisMarkers(2026);
+      var tealOk = true, tealDetail = [];
+      for (var a = 0; a < aps.length; a++) {
+        var p = Orbital.earthPositionAU(aps[a].date);
+        var v = new THREE.Vector3(p.x * SolarScene.SCENE_SCALE, 0, p.z * SolarScene.SCENE_SCALE).project(app.camera);
+        var cx = Math.round((v.x * 0.5 + 0.5) * w), cy = Math.round((-v.y * 0.5 + 0.5) * h);
+        var teal = 0;
+        for (var y = Math.max(0, cy - 30); y <= Math.min(h - 1, cy + 30); y++) {
+          for (var x = Math.max(0, cx - 30); x <= Math.min(w - 1, cx + 30); x++) {
+            if (Math.sqrt((x - cx) * (x - cx) + (y - cy) * (y - cy)) > 30) continue;
+            var i = (y * w + x) * 4;
+            if (d[i] < 130 && d[i + 1] > 180 && d[i + 2] > 200) teal++;
+          }
+        }
+        tealDetail.push(aps[a].kind + ':' + teal);
+        if (teal < 8) tealOk = false;
+      }
+      log('DBG апсиды: ' + tealDetail.join(' '));
+      check('точки апсид (перигелий и афелий) на линии орбиты', tealOk, tealDetail.join(' '));
+
+      var p1 = Orbital.earthPositionAU(aps[0].date), p2 = Orbital.earthPositionAU(aps[1].date);
+      var mx = (p1.x + p2.x) / 2 * SolarScene.SCENE_SCALE, mz = (p1.z + p2.z) / 2 * SolarScene.SCENE_SCALE;
+      // крестик поднят над полюсом Солнца «булавкой» — проецируем его фактическую точку
+      var vc = new THREE.Vector3(mx, SolarScene.SUN_RADIUS + 0.2, mz).project(app.camera);
+      var ccx = Math.round((vc.x * 0.5 + 0.5) * w), ccy = Math.round((-vc.y * 0.5 + 0.5) * h);
+      var cross = 0;
+      for (var yy = Math.max(0, ccy - 14); yy <= Math.min(h - 1, ccy + 14); yy++) {
+        for (var xx = Math.max(0, ccx - 14); xx <= Math.min(w - 1, ccx + 14); xx++) {
+          var ii = (yy * w + xx) * 4;
+          if (d[ii] > 130 && d[ii] < 215 && d[ii + 1] > 160 && d[ii + 1] < 225 && d[ii + 2] > 175 && d[ii + 2] < 240) cross++;
+        }
+      }
+      log('DBG крестик центра: пикселей ' + cross + ' у (' + ccx + ',' + ccy + ')');
+      check('крестик геометрического центра эллипса виден (Солнце — в фокусе)', cross > 4,
+        'пикселей ' + cross + ' у (' + ccx + ',' + ccy + ')');
+    })();
+
+    // 7. вся система: камера сверху на 330 единиц — все 8 планет и пояс астероидов
+    app.update(JUNE);
+    app.camera.position.set(0, 330, 0.1);
+    (function () {
+      var img = pixels();
+      var d = img.data, w = img.width, h = img.height;
+      var ok = true, detail = [];
+      function blended(hex, k) {
+        return [
+          Math.round(parseInt(hex.slice(1, 3), 16) * k),
+          Math.round(parseInt(hex.slice(3, 5), 16) * k),
+          Math.round(parseInt(hex.slice(5, 7), 16) * k)
+        ];
+      }
+      Bodies.planets.forEach(function (p) {
+        // сигнал присутствия планеты: диск/подпись (чистый цвет) и линия орбиты
+        // (альфа-блендинг с чёрным фоном: opacity × цвет; у Земли линия золотая 0,8,
+        // у прочих — цвет планеты 0,35; диск Земли — океан текстуры)
+        var hexes = p.id === 'earth'
+          ? [['#1565c0', 1], ['#c0a060', 0.8]]
+          : [[p.color, 1], [p.color, 0.35]];
+        var cols = [];
+        hexes.forEach(function (hc) {
+          cols.push(blended(hc[0], hc[1]));
+          if (hc[1] === 1) cols.push(blended(hc[0], 0.9)); // полутон освещённого края диска
+        });
+        var wp = app.getBodyWorldPosition(p.id);
+        var v = new THREE.Vector3(wp.x, wp.y, wp.z).project(app.camera);
+        var cx = Math.round((v.x * 0.5 + 0.5) * w), cy = Math.round((-v.y * 0.5 + 0.5) * h);
+        var count = 0;
+        for (var y = Math.max(0, cy - 16); y <= Math.min(h - 1, cy + 16); y++) {
+          for (var x = Math.max(0, cx - 16); x <= Math.min(w - 1, cx + 16); x++) {
+            var i = (y * w + x) * 4;
+            for (var c = 0; c < cols.length; c++) {
+              if (Math.abs(d[i] - cols[c][0]) < 25 && Math.abs(d[i + 1] - cols[c][1]) < 25 &&
+                  Math.abs(d[i + 2] - cols[c][2]) < 25) { count++; break; }
+            }
+          }
+        }
+        detail.push(p.id + ':' + count);
+        if (count < 2) ok = false;
+      });
+      log('DBG планеты: ' + detail.join(' '));
+      check('все 8 планет различимы на общем виде (диски и подписи)', ok, detail.join(' '));
+
+      // пояс астероидов: те же пиксели кадра
+      var beltCol = [0x8d, 0x85, 0x78];
+      var belt = 0;
+      for (var y2 = 0; y2 < h; y2 += 2) {
+        for (var x2 = 0; x2 < w; x2 += 2) {
+          var i2 = (y2 * w + x2) * 4;
+          if (Math.abs(d[i2] - beltCol[0]) < 40 && Math.abs(d[i2 + 1] - beltCol[1]) < 40 &&
+              Math.abs(d[i2 + 2] - beltCol[2]) < 40) belt++;
+        }
+      }
+      log('DBG пояс: пикселей ' + belt);
+      check('пояс астероидов виден кольцом между Марсом и Юпитером', belt > 150, 'пикселей ' + belt);
+    })();
+
+    // 8. кольцо Сатурна: камера подлетает к Сатурну
+    app.setTarget('saturn');
+    app.update(JUNE);
+    (function () {
+      var img = pixels();
+      var d = img.data, w = img.width, h = img.height;
+      // кольцо: MeshBasic 0xb8a98c с opacity 0,45 на чёрном фоне ≈ (83;76;63)
+      var count = 0;
+      for (var y = 0; y < h; y += 2) {
+        for (var x = 0; x < w; x += 2) {
+          var i = (y * w + x) * 4;
+          if (d[i] > 55 && d[i] < 115 && d[i + 1] > 48 && d[i + 1] < 105 && d[i + 2] > 32 && d[i + 2] < 95) count++;
+        }
+      }
+      log('DBG кольцо Сатурна: пикселей ' + count);
+      check('кольцо Сатурна видно (полупрозрачный аннулус)', count > 20, 'пикселей ' + count);
+    })();
+
+    // 9. спутники Юпитера: камера у Юпитера, галилеевы луны в кадре
+    app.setTarget('jupiter');
+    app.update(JUNE);
+    (function () {
+      var img = pixels();
+      var d = img.data, w = img.width, h = img.height;
+      var moons = ['io', 'europa', 'ganymede', 'callisto'];
+      var ok = false, detail = [];
+      moons.forEach(function (mid) {
+        var m = Bodies.moonById(mid);
+        var col = [
+          parseInt(m.color.slice(1, 3), 16),
+          parseInt(m.color.slice(3, 5), 16),
+          parseInt(m.color.slice(5, 7), 16)
+        ];
+        var count = 0;
+        for (var y = 0; y < h; y += 2) {
+          for (var x = 0; x < w; x += 2) {
+            var i = (y * w + x) * 4;
+            if (Math.abs(d[i] - col[0]) < 40 && Math.abs(d[i + 1] - col[1]) < 40 &&
+                Math.abs(d[i + 2] - col[2]) < 40) count++;
+          }
+        }
+        detail.push(mid + ':' + count);
+        if (count > 2) ok = true;
+      });
+      log('DBG луны Юпитера: ' + detail.join(' '));
+      check('галилеевы спутники видны рядом с Юпитером (хотя бы одна луна)', ok, detail.join(' '));
+    })();
+
+    // 9.5 орбита луны центрирована на планете: противоположная Ио точка кольца
+    // лежит на линии орбиты (кольцо НЕ «ездит» вместе со спутником)
+    app.setTarget('jupiter');
+    app.update(JUNE);
+    (function () {
+      var img = pixels();
+      var d = img.data, w = img.width, h = img.height;
+      var io = Bodies.moonById('io');
+      var jw = app.getBodyWorldPosition('jupiter');
+      var pos = Kepler.positionAU(io.orbit, JUNE);
+      var r = Math.sqrt(pos.x * pos.x + pos.y * pos.y + pos.z * pos.z);
+      // противоположная точка кольца: радиус displayOrbit от Юпитера против направления на Ио
+      var opp = new THREE.Vector3(
+        jw.x - pos.x / r * io.displayOrbit,
+        jw.y + pos.y / r * io.displayOrbit,
+        jw.z - pos.z / r * io.displayOrbit
+      ).project(app.camera);
+      var cx = Math.round((opp.x * 0.5 + 0.5) * w), cy = Math.round((-opp.y * 0.5 + 0.5) * h);
+      var base = [
+        parseInt(io.color.slice(1, 3), 16),
+        parseInt(io.color.slice(3, 5), 16),
+        parseInt(io.color.slice(5, 7), 16)
+      ];
+      // линия орбиты: цвет Ио с opacity 0,4 на чёрном фоне
+      var col = [Math.round(base[0] * 0.4), Math.round(base[1] * 0.4), Math.round(base[2] * 0.4)];
+      var count = 0;
+      for (var y = Math.max(0, cy - 10); y <= Math.min(h - 1, cy + 10); y++) {
+        for (var x = Math.max(0, cx - 10); x <= Math.min(w - 1, cx + 10); x++) {
+          var i = (y * w + x) * 4;
+          if (Math.abs(d[i] - col[0]) < 20 && Math.abs(d[i + 1] - col[1]) < 20 &&
+              Math.abs(d[i + 2] - col[2]) < 20) count++;
+        }
+      }
+      log('DBG центр орбиты Ио: пикселей линии у противоположной точки ' + count + ' у (' + cx + ',' + cy + ')');
+      check('кольцо орбиты луны центрировано на Юпитере (противоположная точка на линии)', count > 3,
+        'пикселей ' + count);
+    })();
+
+    // 10. слежение: после 90 суток камера держит Юпитер в центре кадра
+    app.update(new Date(JUNE.getTime() + 90 * 86400000));
+    (function () {
+      var img = pixels();
+      var wp = app.getBodyWorldPosition('jupiter');
+      var v = new THREE.Vector3(wp.x, wp.y, wp.z).project(app.camera);
+      var cx = (v.x * 0.5 + 0.5) * img.width, cy = (-v.y * 0.5 + 0.5) * img.height;
+      var off = Math.sqrt(Math.pow(cx - img.width / 2, 2) + Math.pow(cy - img.height / 2, 2));
+      log('DBG слежение: Юпитер в (' + cx.toFixed(0) + ',' + cy.toFixed(0) + '), отклонение ' + off.toFixed(0) + 'px');
+      check('слежение: через 90 суток Юпитер остаётся в центре кадра', off < 60,
+        'отклонение ' + off.toFixed(0) + 'px');
+    })();
+
+    // 11. Плутон: различим на общем виде (диск, подпись, линия орбиты)
+    app.setTarget('sun');
+    app.update(JUNE);
+    app.camera.position.set(0, 330, 0.1);
+    (function () {
+      var img = pixels();
+      var d = img.data, w = img.width, h = img.height;
+      var pluto = Bodies.dwarfById('pluto');
+      var cols = [];
+      [[pluto.color, 1], [pluto.color, 0.9], [pluto.color, 0.35]].forEach(function (hc) {
+        cols.push([
+          Math.round(parseInt(hc[0].slice(1, 3), 16) * hc[1]),
+          Math.round(parseInt(hc[0].slice(3, 5), 16) * hc[1]),
+          Math.round(parseInt(hc[0].slice(5, 7), 16) * hc[1])
+        ]);
+      });
+      var wp = app.getBodyWorldPosition('pluto');
+      var v = new THREE.Vector3(wp.x, wp.y, wp.z).project(app.camera);
+      var cx = Math.round((v.x * 0.5 + 0.5) * w), cy = Math.round((-v.y * 0.5 + 0.5) * h);
+      // Плутон обязан быть далеко от Солнца (~34 а.е. → ~116 ед. → сотни пикселей);
+      // отсутствие тела на сцене даёт позицию (0,0,0) — центр кадра
+      var offCenter = Math.sqrt(Math.pow(cx - w / 2, 2) + Math.pow(cy - h / 2, 2));
+      var count = 0;
+      for (var y = Math.max(0, cy - 16); y <= Math.min(h - 1, cy + 16); y++) {
+        for (var x = Math.max(0, cx - 16); x <= Math.min(w - 1, cx + 16); x++) {
+          var i = (y * w + x) * 4;
+          for (var c = 0; c < cols.length; c++) {
+            if (Math.abs(d[i] - cols[c][0]) < 25 && Math.abs(d[i + 1] - cols[c][1]) < 25 &&
+                Math.abs(d[i + 2] - cols[c][2]) < 25) { count++; break; }
+          }
+        }
+      }
+      log('DBG Плутон: пикселей ' + count + ' у (' + cx + ',' + cy + '), от центра ' + offCenter.toFixed(0) + 'px');
+      check('Плутон различим на общем виде (вне центра, цвет диска/подписи/линии)',
+        count > 2 && offCenter > 100,
+        'пикселей ' + count + ', от центра ' + offCenter.toFixed(0) + 'px');
+    })();
+
+    // 12. Харон виден рядом с Плутоном. Окно — вокруг РАСЧЁТНОЙ позиции Харона
+    // (учтён наклон оси Плутона 122,53°: локальная позиция поворачивается как tilt-
+    // группа сцены). Камера ставится перпендикулярно направлению на Харон, чтобы он
+    // был на фоне космоса: без Харона в окне остаются только звёзды — тест ловит
+    // его отсутствие (цвет Плутона в окно не попадает).
+    app.setTarget('pluto');
+    app.update(JUNE);
+    (function () {
+      var pw = app.getBodyWorldPosition('pluto');
+      var charon = Bodies.moonById('charon');
+      var pos = Kepler.positionAU(charon.orbit, JUNE);
+      var r = Math.sqrt(pos.x * pos.x + pos.y * pos.y + pos.z * pos.z);
+      var R = Scales.moonOrbitRadius(charon.displayOrbit, charon.orbit.a, r);
+      var lx = pos.x / r * R, ly = pos.y / r * R, lz = pos.z / r * R;
+      var t = Bodies.dwarfById('pluto').tiltDeg * Math.PI / 180;
+      var world = new THREE.Vector3(
+        pw.x + lx,
+        pw.y + ly * Math.cos(t) - lz * Math.sin(t),
+        pw.z + ly * Math.sin(t) + lz * Math.cos(t)
+      );
+      // камера перпендикулярно направлению Плутон → Харон
+      var dirH = new THREE.Vector3(world.x - pw.x, world.y - pw.y, world.z - pw.z).normalize();
+      var perp = new THREE.Vector3(0, 1, 0).cross(dirH);
+      if (perp.length() < 0.01) perp = new THREE.Vector3(1, 0, 0);
+      perp.normalize();
+      app.camera.position.set(pw.x + perp.x * 12, pw.y + perp.y * 12, pw.z + perp.z * 12);
+      var img = pixels();
+      var d = img.data, w = img.width, h = img.height;
+      var col = [
+        parseInt(charon.color.slice(1, 3), 16),
+        parseInt(charon.color.slice(3, 5), 16),
+        parseInt(charon.color.slice(5, 7), 16)
+      ];
+      var v = world.clone().project(app.camera);
+      var cx = Math.round((v.x * 0.5 + 0.5) * w), cy = Math.round((-v.y * 0.5 + 0.5) * h);
+      var count = 0;
+      for (var y = Math.max(0, cy - 14); y <= Math.min(h - 1, cy + 14); y++) {
+        for (var x = Math.max(0, cx - 14); x <= Math.min(w - 1, cx + 14); x++) {
+          var i = (y * w + x) * 4;
+          if (Math.abs(d[i] - col[0]) < 25 && Math.abs(d[i + 1] - col[1]) < 25 &&
+              Math.abs(d[i + 2] - col[2]) < 25) count++;
+        }
+      }
+      log('DBG Харон: пикселей ' + count + ' у (' + cx + ',' + cy + ')');
+      check('Харон виден в расчётной позиции рядом с Плутоном', count > 20, 'пикселей ' + count);
+    })();
+
+    // 13. слежение за Плутоном: камера рядом с Плутоном, он в центре кадра
+    // (сдвиг на год: ~1,45° орбиты — без applyTracking ушло бы ~200 px)
+    app.update(new Date(JUNE.getTime() + 365 * 86400000));
+    (function () {
+      var img = pixels();
+      var wp = app.getBodyWorldPosition('pluto');
+      var wpLen = Math.sqrt(wp.x * wp.x + wp.y * wp.y + wp.z * wp.z);
+      var cam = app.camera.position;
+      var camDist = Math.sqrt(Math.pow(cam.x - wp.x, 2) + Math.pow(cam.y - wp.y, 2) + Math.pow(cam.z - wp.z, 2));
+      var v = new THREE.Vector3(wp.x, wp.y, wp.z).project(app.camera);
+      var cx = (v.x * 0.5 + 0.5) * img.width, cy = (-v.y * 0.5 + 0.5) * img.height;
+      var off = Math.sqrt(Math.pow(cx - img.width / 2, 2) + Math.pow(cy - img.height / 2, 2));
+      log('DBG слежение за Плутоном: орбита ' + wpLen.toFixed(1) + ' ед., камера в ' + camDist.toFixed(1) + ' ед., отклонение ' + off.toFixed(0) + 'px');
+      check('слежение: Плутон на своей орбите, в центре кадра, камера подлетела',
+        off < 60 && camDist < 30 && wpLen > 100,
+        'орбита ' + wpLen.toFixed(1) + ' ед., камера ' + camDist.toFixed(1) + ' ед., отклонение ' + off.toFixed(0) + 'px');
+    })();
+
+    document.getElementById('results').textContent = lines.join('\n');
+    document.title = /^FAIL/m.test(lines.join('\n')) ? 'VISUAL-FAIL' : 'VISUAL-PASS';
+  }
+
+  try { run(); }
+  catch (e) {
+    lines.push('FAIL визуальный харнесс :: ' + (e && e.message));
+    document.getElementById('results').textContent = lines.join('\n');
+    document.title = 'VISUAL-FAIL';
+  }
+})();
+</script>
+</body>
+</html>
